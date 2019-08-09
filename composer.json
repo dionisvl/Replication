@@ -1,5 +1,5 @@
 {
-    "name": "brainysoft/tools.php.replicate",
+    "name": "dionisvl/replication",
     "description": "Репликация таблицы из одной базы в другую и по API",
     "type": "project",
     "license": "MIT",
