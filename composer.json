@@ -1,0 +1,22 @@
+{
+    "name": "brainysoft/tools.php.replicate",
+    "description": "Репликация таблицы из одной базы в другую и по API",
+    "type": "project",
+    "license": "MIT",
+    "authors": [
+        {
+            "name": "den",
+            "email": "dionisvl3@gmail.com"
+        }
+    ],
+    "minimum-stability": "dev",
+    "require": {
+        "php": ">=5.5"
+    },
+    "autoload": {
+        "files": ["src/functions_include.php"],
+        "psr-4": {
+            "Replication\\": "src/"
+        }
+    }
+}
