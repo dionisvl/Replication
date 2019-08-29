@@ -2,7 +2,11 @@
 
 namespace Replication\ReplicateTable;
 
+use PDO;
+
 /**
+ * Это полноценная репликация с заполнением таблицы истории и служебных колонок в репликанте
+ *
  * Скопируем всё из таблицы из БД оригинала в таблицу БД назначения
  * - алгоритм учитывает последний копированный id и последний копированный timestamp
  * для избежания повторного копирования
@@ -21,19 +25,19 @@ class ReplicateTable
     private $sourceTableColumnsString = '';
     private $ODKU_textBlock = '';
 
-    public function __construct()
+    public function __construct(ReplicateTableConfig $config)
     {
         $this->start_time = microtime(true);
 
-        $this->config = new Config();
+        $this->config = $config;
 
         /**Если процесс копирования завершен, тогда установим статус о том что он начался
-         * 0 - в процессе. 1 - процесс копирования завершен
+         * IN_PROCESS - в процессе. FREE - процесс копирования завершен и готов начаться снова.
          */
-        if ($this->config->getReplicateProcessStatus() == 1){
-            $this->config->setReplicateProcessStatus(0);
+        if ($this->config->getReplicateProcessStatus() == 'FREE') {
+            $this->config->setReplicateProcessStatus('IN_PROCESS');
         } else {
-            print_r('Процесс репликации уже запущен. Поэтому ваш запрос отклонен и программа завершает работу.'.PHP_EOL);
+            print_r('Процесс репликации уже запущен. Поэтому ваш запрос отклонен и программа завершает работу.' . PHP_EOL);
             die();
         }
 //        $this->repl_history = $this->config->getReplHistoryTableName();
@@ -58,9 +62,11 @@ class ReplicateTable
          * ...
          * - по завершении репликации заполняем поле repl_create_ts в табл  repl_history
          */
+
+        print_r('Ограничительный размер пачки репликации - $batch_size: ' . $this->config->getBatchSize() . PHP_EOL . '<br>');
         print_r('Последний обработанный timestamp: $last_processed_ts: ' . $this->config->getLastProcessedTs() . PHP_EOL . '<br>');
         print_r('Последний обработанный id, $last_processed_id: ' . $this->config->getLastProcessedId() . PHP_EOL . '<br>');
-        print_r('Ограничительный размер пачки репликации - $batch_size: ' . $this->config->getBatchSize() . PHP_EOL . '<br>');
+
 
         $this->get_batch(
             $this->config->getSourceTableConnect(),
@@ -69,8 +75,8 @@ class ReplicateTable
             $this->config->getLastProcessedId(),
             $this->config->getBatchSize()
         );
-        $this->config->setReplicateProcessStatus(1);//Установим флаг о том что процесс завершился
-        print_r("<h2>Репликация всех пачек завершена</h2>");
+        $this->config->setReplicateProcessStatus('FREE');//Установим флаг о том что процесс завершился
+        dump("<h3>Репликация всех пачек завершена</h3>");
         $this->end_time = microtime(true);
     }
 
@@ -80,10 +86,11 @@ class ReplicateTable
      */
     private function setReplicateHistoryRecord($db, $batch_size, $update_ts_first, $update_ts_last, $status, $info, $id = null)
     {
+        $repl_history = $this->config->getReplHistoryTableName();
         try {
             if ($id) {
                 $sql = "
-                    UPDATE repl_history 
+                    UPDATE $repl_history 
                        SET         
                         batch_size = :batch_size
                         ,update_ts_first = :update_ts_first
@@ -94,7 +101,7 @@ class ReplicateTable
                  ";
             } else {
                 $sql = "
-                    INSERT INTO repl_history (batch_size, update_ts_first, update_ts_last , status, info)
+                    INSERT INTO $repl_history (batch_size, update_ts_first, update_ts_last , status, info)
                     VALUES (:batch_size, :update_ts_first,:update_ts_last, :status, :info)
                  ";
             }
@@ -109,14 +116,14 @@ class ReplicateTable
                 $sth->bindValue(':id', $id, PDO::PARAM_INT);
             }
             $sth->execute();
-
+            $this->check_pdo($sth);
             if ($id) {
                 return $id;
             } else
                 return $db->lastInsertId();
         } catch (PDOException $e) {
             print "Error!:" . $e->getMessage() . "<br/>";
-            $this->config->setReplicateProcessStatus(1);//Установим флаг о том что процесс завершился
+            $this->config->setReplicateProcessStatus('FREE');//Установим флаг о том что процесс завершился
             die();
         }
     }
@@ -128,16 +135,12 @@ class ReplicateTable
         $sql = "SHOW COLUMNS FROM `$tableName`";
         $stmt = $db->prepare($sql);
         $stmt->execute();
-        if (!$stmt) {
-            echo "\nPDO::errorInfo():\n";
-            print_r($db->errorInfo());
-            $this->config->setReplicateProcessStatus(1);//Установим флаг о том что процесс завершился
-            die();
-        } else {
-            while ($row = $stmt->fetch(PDO::FETCH_ASSOC)) {
-                $a[] = $row['Field'];
-            }
+        $this->check_pdo($stmt);
+
+        while ($row = $stmt->fetch(PDO::FETCH_ASSOC)) {
+            $a[] = $row['Field'];
         }
+
         return $a;
     }
 
@@ -150,6 +153,7 @@ class ReplicateTable
      * , create_ts = src.create_ts
      * , update_ts = src.update_ts
      * , repl_proc_id = src.repl_proc_id
+     * @return string
      */
     private function createOnDuplicateKeyUpdateTextBlock($tableColumns)
     {
@@ -178,6 +182,7 @@ class ReplicateTable
      * , NULL as repl_proc_id
      * UNION SELECT ..., ..., ..., ::repl_proc_id
      * UNION SELECT ..., ..., ..., ::repl_proc_id
+     * @return string
      */
     private function createUnionSelect($data, $tableColumns, $repl_proc_id = null)
     {
@@ -216,31 +221,35 @@ class ReplicateTable
      * записей и максимальное значение id из всех записей с максимальным update_ts.
      */
 
-    private function get_batch($db, $dest_db, $last_processed_ts, $last_processed_id, $batch_size)
+    private function get_batch($db, $dest_db, $last_processed_ts, $last_processed_id, int $batch_size)
     {
+        $source_table = $this->config->getSourceTableName();
+        $dest_table = $this->config->getDestTableName();
+
         try {
             static $iteration_number;
             $iteration_number++;
             print_r("<h3>Началась репликация пачки № $iteration_number.</h3>");
-            $sql = '
-SELECT * from source_table
+            $sql = "
+SELECT * from $source_table
 where TRUE
     and update_ts >= :last_processed_ts
     and id > IF(update_ts = :last_processed_ts, :last_processed_id, 0)
 order by update_ts, id
-limit :batch_size
-';
+limit :batch_size;
+";
             //получим пакет записей из родительской таблицы
             $sth = $db->prepare($sql);
-            $sth->bindValue(':last_processed_ts', $last_processed_ts);
+            $sth->bindValue(':last_processed_ts', $last_processed_ts, PDO::PARAM_STR);
             $sth->bindValue(':last_processed_id', $last_processed_id, PDO::PARAM_INT);
             $sth->bindValue(':batch_size', $batch_size, PDO::PARAM_INT);
             $sth->execute();
+            $this->check_pdo($sth);
 
             $data = $sth->fetchAll();
-            if (empty($data)){
+            if (empty($data)) {
 //                dump($data);
-                dump('<h2>Свежих записей не обнаружено!</h2>');
+                dump('<h3>Свежих записей не обнаружено!</h3>');
                 return false;
             }
 
@@ -251,14 +260,14 @@ limit :batch_size
             $union_text = $this->createUnionSelect($data, $this->sourceTableColumns, $repl_proc_id);
 
 //        dump($union_text);
-//$this->config->setReplicateProcessStatus(1);//Установим флаг о том что процесс завершился
+//$this->config->setReplicateProcessStatus('FREE');//Установим флаг о том что процесс завершился
 //        die();
             /**
              * Для репликации необходимо использовать mysql-инструкцию insert ... select ... on duplicate key update.
              * Запрос подобного вида выполняется репликационным скриптом один раз после получения пакета записей из исходной таблицы.
              */
             $sql = "
-INSERT INTO dest_table ($this->sourceTableColumnsString, repl_proc_id)
+INSERT INTO $dest_table ($this->sourceTableColumnsString, repl_proc_id)
 SELECT * FROM (
     $union_text
 ) AS src
@@ -269,6 +278,7 @@ ON DUPLICATE KEY UPDATE
 
             $sth = $dest_db->prepare($sql);
             $sth->execute();
+            $this->check_pdo($sth);
 
             $max_id = 0;
             $max_ts = $last_processed_ts;
@@ -293,7 +303,7 @@ ON DUPLICATE KEY UPDATE
             $update_ts_first = $data[array_key_first($data)]['update_ts'];
             $repl_status = $this->setReplicateHistoryRecord($dest_db, $this_batch_size, $update_ts_first, $update_ts_last, 1, 'Репликация завершена', $repl_proc_id);
 
-            dump(PHP_EOL . "<h4>Репликация завершена. ID Записи в истории репликации: $repl_status. </h4>");
+            dump(PHP_EOL . "<h4>Репликация пачки завершена. ID Записи в истории репликации: $repl_status. </h4>");
             dump("<p>Размер этой обновленной пачки: $this_batch_size. </p>");
             dump("<p>Последний обновленный ID: $max_id. </p>");
             dump("<p>Последний обновленный ts: $max_ts. </p><br><br>");
@@ -315,7 +325,7 @@ ON DUPLICATE KEY UPDATE
             }
         } catch (PDOException $e) {
             print "Error!:" . $e->getMessage() . "<br/>";
-            $this->config->setReplicateProcessStatus(1);//Установим флаг о том что процесс завершился
+            $this->config->setReplicateProcessStatus('FREE');//Установим флаг о том что процесс завершился
             die();
         }
     }
@@ -324,8 +334,18 @@ ON DUPLICATE KEY UPDATE
     {
         return number_format($this->end_time - $this->start_time, 3, '.', ',');
     }
-}
 
-$replicate = new replicate();
-$exec_time = $replicate->getExecutionTime();
-dump(' Время исполнения: ' . $exec_time . ' сек.');
+    private function check_pdo($sth)
+    {
+        if (!empty($sth->errorInfo()[2])) {
+            dump('['.__LINE__.']Произошла ошибка репликации:');
+            dump($sth->errorInfo()[2]);
+            dump('Полная структура запроса:');
+            dump($sth);
+            $this->config->setReplicateProcessStatus('FREE');//Установим флаг о том что процесс завершился
+            $backtrace = debug_backtrace();
+            dump($backtrace);
+            die();
+        }
+    }
+}

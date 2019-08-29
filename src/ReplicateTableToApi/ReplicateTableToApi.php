@@ -2,59 +2,60 @@
 
 namespace Replication\ReplicateTableToApi;
 
+use PDO;
+use PDOException;
 
 class ReplicateTableToApi
 {
     private $config;
     private $dataSchema;
-    private $newLeads;
-
+    private $newItems;
 
     private $start_time;
     private $end_time;
 
-    public function __construct()
+    public function __construct(ReplicateTableToApiConfig $config)
     {
-//        $this->start_time = microtime(true);
-//        $this->end_time = microtime(true);
+        $this->start_time = microtime(true);
 
-        $this->config = new Config();
-        /**
-        Установим статус репликации о том что она в процессе
-        для того чтобы параллельный запуск процессов копирования по крону не привел ошибкам
-        0 - процесс копирования завершен. 1 -  процесс копирования идет в настоящий момент
+        $this->config = $config;
+
+        /**Если процесс копирования завершен, тогда установим статус о том что он начался
+         * IN_PROCESS - в процессе. FREE - процесс копирования завершен и готов начаться снова.
          */
-        if ($this->config->getParam('replicate_to_core_process_status') == 1){
-            die('Ошибка! В настоящий момент происходит другой процесс репликации');
+        if ($this->config->getReplicateToApiProcessStatus() == 'FREE') {
+            $this->config->setReplicateToApiProcessStatus('IN_PROCESS');
         } else {
-            $this->config->setParam('replicate_to_core_process_status',1);
+            print_r('Процесс репликации в API уже запущен. Поэтому ваш запрос отклонен и программа завершает работу.' . PHP_EOL);
+            die();
         }
 
         $this->dataSchema = $this->config->getDataSchema();
-
-
     }
 
-    public function getNewLeads()
+    /**
+     * Получение новых строк из источника, по заданной колонке и её статусу
+     * По умолчанию подразумевается получение новых готовых лидов у которых колонка "user_status" = 1
+     */
+    public function getNewItems($db, $source_table, $column = 'user_status', $status = 1)
     {
-        $db = $this->config->getDestTableConnect();
-
         try {
-            $sql = 'SELECT * from dest_table WHERE user_status = 1';
+            $sql = "SELECT * from $source_table WHERE $column = '$status'";
 
             $stmt = $db->prepare($sql);
             $stmt->execute();
+            $this->check_pdo($stmt);
             $data = $stmt->fetchAll();
 
-            $newLeads = [];
+            $newItems = [];
             foreach ($data as $index => $row) {
-                $newLeads[$index] = $this->parseRow($row, $this->dataSchema);
+                $newItems[$index] = $this->parseRow($row, $this->dataSchema);
             }
-            $this->newLeads = $newLeads;
-            return $newLeads;
+            $this->newItems = $newItems;
+            return $newItems;
         } catch (PDOException $e) {
             print "Error!:" . $e->getMessage() . "<br/>";
-            $this->config->setParam('replicate_to_core_process_status',0);
+            $this->config->setReplicateToApiProcessStatus('FREE');
             die();
         }
     }
@@ -78,8 +79,116 @@ class ReplicateTableToApi
             }
 
         }
-        dump($outputRow);
+//        dump($outputRow);
         return $outputRow;
+    }
+
+    /**
+     * @param $items
+     * @return string
+     */
+    public function sendItemsToApiTable($url,$items,$token)
+    {
+        $table = $this->config->getSourceSqlTableName();
+        $db = $this->config->getSourceSqlTableConnect();
+        foreach ($items as $item) {
+            $result = $this->sendItemToApi($url, $item,$token);//Запрос на создание лида
+            switch ($result) {
+                case ($result['status'] == 'ok'):
+                    /**
+                     * NOT_READY - не готов к копированию.
+                     * READY_TO_REPLICATE - готов к репликации.
+                     * ALREADY_REPLICATED - реплицирован больше не трогать.
+                     **/
+                    $this->setStatusToItem($db, $table, 'user_status', $item['id'], 'ALREADY_REPLICATED');
+                    continue;
+                case (empty($result)):
+                    return 'ERROR - empty response of item id = ' . $item['id'];
+                case ($result['status'] == 'error'):
+                    return $result;
+                default:
+                    return 'UNKNOWN ERROR of item id = ' . $item['id'];
+            }
+        }
+        return 'ok';
+    }
+
+    private function sendItemToApi($fullUrl, $itemValues,$bsauth)
+    {
+        $bodyFields = $itemValues;
+
+        //$bsauth = $token; //fastmoney
+        $headers = [
+            "Content-Type" => "application/json",
+            "bsauth" => "$bsauth",
+            "cache-control" => "no-cache"
+        ];
+        $request = new Request('curl');
+        $response = $request->run('POST', $fullUrl, $bodyFields, $headers);
+        $response = json_decode($response, true);
+        return $response;
+    }
+
+    /**
+     * Установить статус элементу в исходной таблице
+     * В частности для того чтобы в следующий раз не трогать этот элемент и лишний раз не копировать
+     * @param int $status
+     * @param int $leadId
+     * @return bool
+     */
+    public function setStatusToItem($db, $table, $column = 'user_status', int $itemId, string $status)
+    {
+        try {
+            $sql = "UPDATE $table SET $column = :status WHERE id = :itemId";
+            $stmt = $db->prepare($sql);
+            $stmt->BindValue(':status', $status, PDO::PARAM_STR);
+            $stmt->BindValue(':itemId', $itemId, PDO::PARAM_INT);
+
+            $stmt->execute();
+            $this->check_pdo($stmt);
+            dump("Статус у элемента $itemId успешно обновлен на $status");
+//            if ($stmt->execute()) {
+//                //return true;
+//            } else {
+//                return false;
+//            }
+
+        } catch (PDOException $e) {
+            print "Error!:" . $e->getMessage() . "<br/>";
+            $config->setReplicateToApiProcessStatus('FREE');
+            die();
+        }
+    }
+
+    private function sendLeadToMysqlTest($itemValues)
+    {
+        $db = $this->config->getSourceSqlTableConnect();
+        $sourceTable = $this->config->getSourceSqlTableName();
+        $keysForSql = $this->implodeKeys(', ', $leadValues);
+        $valuesKeysForPDO_Sql = ':' . $this->implodeKeys(', :', $leadValues);
+        try {
+            $sql = "INSERT INTO core_customer_table ($keysForSql) VALUES ($valuesKeysForPDO_Sql)";
+            $stmt = $db->prepare($sql);
+            foreach ($itemValues as $key => $value) {
+                $stmt->bindParam(':' . $key, $value);
+            }
+
+            if ($stmt->execute()) {
+                /**
+                 * NOT_READY - не готов к копированию.
+                 * READY_TO_REPLICATE - готов к репликации.
+                 * ALREADY_REPLICATED - реплицирован больше не трогать.
+                 **/
+                $this->setStatusToItem($db, $sourceTable, 'user_status', $value['id'], 'ALREADY_REPLICATED');
+                return true;
+            } else {
+                return false;
+            }
+        } catch (PDOException $e) {
+            print "Error!:" . $e->getMessage() . "<br/>";
+            $config->setReplicateToApiProcessStatus('FREE');
+            die();
+        }
     }
 
     /**
@@ -99,274 +208,22 @@ class ReplicateTableToApi
         return $out;
     }
 
-    /**
-     * @param $leads
-     * @return string
-     */
-    public function sendLeadsToCoreTable($leads)
-    {
-        foreach ($leads as $lead) {
-            $result = $this->sendLeadToCore($lead);
-            switch ($result){
-                case (empty($result)):
-                    return 'empty response';
-                case ($result['status'] == 'ok'):
-                    $this->setStatusToLead($lead['id'], 2);//0 - не готов к копированию.1 - готов к репликации.2 - реплицирован больше не трогать.
-//                    return 'ok';
-                    continue;
-                case ($result['status'] == 'error'):
-                    return $result;
-                default:
-                    return false;
-            }
-        }
-        return 'ok';
-    }
-
-    private function sendLeadToCore($leadValues)
-    {
-        $url = 'https://core.brainysoft.ru:9025/bs-core/main/leads/';//Запрос на создание лида
-        $bodyFields = $leadValues;
-
-        $bsauth = '=='; //fastmoney
-        $headers = [
-            "Content-Type" => "application/json",
-            "bsauth" => "$bsauth",
-            "cache-control" => "no-cache"
-        ];
-        $request = new Request('curl');
-        $response = $request->run('POST', $url, $bodyFields, $headers);
-        $response = json_decode($response,true);
-        return $response;
-    }
-
-    /**
-     * Установить статус лиду в исходной таблице
-     * В частности для того чтобы в следующий раз не трогать этого лида и лишний раз не копировать
-     * @param int $status
-     * @param int $leadId
-     * @return bool
-     */
-    private function setStatusToLead(int $leadId, int $status)
-    {
-        $db = $this->config->getDestTableConnect();
-        try {
-            $sql = "UPDATE dest_table SET user_status = :status WHERE id = :leadId";
-            $stmt = $db->prepare($sql);
-            $stmt->BindValue(':status', $status, PDO::PARAM_INT);
-            $stmt->BindValue(':leadId', $leadId, PDO::PARAM_INT);
-
-            if ($stmt->execute()) {
-                //return true;
-                dump("Статус у лида $leadId успешно обновлен на $status");
-            } else {
-                return false;
-            }
-        } catch (PDOException $e) {
-            print "Error!:" . $e->getMessage() . "<br/>";
-            $this->config->setParam('replicate_to_core_process_status',0);
-            die();
-        }
-    }
-
-    private function sendLeadToMysqlTest($leadValues)
-    {
-        $db = $this->config->getDestTableConnect();
-        $keysForSql = $this->implodeKeys(', ', $leadValues);
-        $valuesKeysForPDO_Sql = ':' . $this->implodeKeys(', :', $leadValues);
-        try {
-            $sql = "INSERT INTO core_customer_table ($keysForSql) VALUES ($valuesKeysForPDO_Sql)";
-            $stmt = $db->prepare($sql);
-            foreach ($leadValues as $key => $value) {
-                $stmt->bindParam(':' . $key, $value);
-            }
-
-            if ($stmt->execute()) {
-                $this->setStatusToLead($leadValues['id'], 3);//0 - не готов к копированию.2 - готов к репликации.3 - реплицирован больше не трогать.
-                return true;
-            } else {
-                return false;
-            }
-        } catch (PDOException $e) {
-            print "Error!:" . $e->getMessage() . "<br/>";
-            $this->config->setParam('replicate_to_core_process_status',0);
-            die();
-        }
-    }
-
     public function getExecutionTime()
     {
-        return number_format($this->end_time - $this->start_time, 3, '.', ',');
+        return number_format(microtime(true) - $this->start_time, 3, '.', ',');
     }
 
-}
-
-class Request
-{
-    private $method = '';
-
-    public function __construct(String $method = 'curl')
+    private function check_pdo($sth)
     {
-        $this->method = $method;
-    }
-
-    public function run($requestType, $url, $bodyFields, $headers)
-    {
-        switch ($this->method) {
-            case 'curl':
-                return $this->curl($requestType, $url, $bodyFields, $headers);
-            case 'socket':
-                return $this->socket($requestType, $url, $bodyFields, $headers);
-            case 'phpstream':
-                return $this->phpStream();
-            default:
-                return ('change right request method type: curl or socket or phpstream');
+        if (!empty($sth->errorInfo()[2])) {
+            dump('[' . __LINE__ . ']Произошла ошибка репликации:');
+            dump($sth->errorInfo()[2]);
+            dump('Полная структура запроса:');
+            dump($sth);
+            $this->config->setReplicateToApiProcessStatus('FREE');//Установим флаг о том что процесс завершился
+            $backtrace = debug_backtrace();
+            dump($backtrace);
+            die();
         }
-    }
-
-    private function curl($requestType, $url, $bodyFields, $headers = ["Content-Type" => "application/json", "cache-control" => "no-cache"])
-    {
-        $curl = curl_init();
-        curl_setopt_array(
-            $curl, [
-                //CURLOPT_PORT => "9025",
-                CURLOPT_URL => $url,
-                CURLOPT_RETURNTRANSFER => true,
-                CURLOPT_CUSTOMREQUEST => $requestType,
-                CURLOPT_POSTFIELDS => json_encode($bodyFields, JSON_UNESCAPED_UNICODE), //Собранный JSON
-                CURLOPT_HTTPHEADER => $this->prepareHeaders($headers)
-            ]
-        );
-        $response = curl_exec($curl);
-        $err = curl_error($curl);
-        curl_close($curl);
-
-        if ($err) {
-            return "cURL Error during request: " . $err;
-        } else {
-            return $response;
-        }
-    }
-
-    private function socket()
-    {
-        $url = parse_url(''); // url
-        $requestArray = array('var' => 'value');
-        $sock = socket_create(AF_INET, SOCK_STREAM, SOL_TCP);
-        socket_connect($sock, $url['host'], ((isset($url['port'])) ? $url['port'] : 80));
-        if (!$sock) {
-            throw new Exception('Connection could not be established');
-        }
-
-        $request = '';
-        if (!empty($requestArray)) {
-            foreach ($requestArray as $k => $v) {
-                if (is_array($v)) {
-                    foreach ($v as $v2) {
-                        $request .= urlencode($k) . '[]=' . urlencode($v2) . '&';
-                    }
-                } else {
-                    $request .= urlencode($k) . '=' . urlencode($v) . '&';
-                }
-            }
-            $request = substr($request, 0, -1);
-        }
-        $data = "POST " . $url['path'] . ((!empty($url['query'])) ? '?' . $url['query'] : '') . " HTTP/1.0\r\n"
-            . "Host: " . $url['host'] . "\r\n"
-            . "Content-type: application/x-www-form-urlencoded\r\n"
-            . "User-Agent: PHP\r\n"
-            . "Content-length: " . strlen($request) . "\r\n"
-            . "Connection: close\r\n\r\n"
-            . $request . "\r\n\r\n";
-        socket_send($sock, $data, strlen($data), 0);
-
-        $result = '';
-        do {
-            $piece = socket_read($sock, 1024);
-            $result .= $piece;
-        } while ($piece != '');
-        socket_close($sock);
-        // TODO: Add Header Validation for 404, 403, 401, 500 etc.
-        echo $result;
-    }
-
-    private function phpStream()
-    {
-        $postdata = http_build_query(
-            array(
-                'var1' => 'some content',
-                'var2' => 'doh'
-            )
-        );
-        $opts = array('http' =>
-            array(
-                'method' => 'POST',
-                'header' => 'Content-type: application/x-www-form-urlencoded',
-                'content' => $postdata
-            )
-        );
-        $context = stream_context_create($opts);
-        $result = file_get_contents('http://example.com/submit.php', false, $context);
-        return $result;
-    }
-
-    private function prepareHeaders($headers)
-    {
-        $flattened = [];
-        foreach ($headers as $key => $header) {
-            if (is_int($key)) {
-                $flattened[] = $header;
-            } else {
-                $flattened[] = $key . ': ' . $header;
-            }
-        }
-        return $flattened;//implode("\r\n", $flattened);
     }
 }
-
-$repl = new ReplicateLeadsToCoreTable();
-
-$newLeads = $repl->getNewLeads();
-if (empty($newLeads)) {
-    dump('Новых лидов для репликации не найдено');
-    $this->config->setParam('replicate_to_core_process_status',1);
-} else {
-    $result = $repl->sendLeadsToCoreTable($newLeads);
-    dump($result);
-    $this->config->setParam('replicate_to_core_process_status',1);
-    die();
-}
-
-/*
-  Создание нового лида https://connect.brainysoft.ru/documentation/page/453
-  элементарный сценарий по созданию нового лида: https://connect.brainysoft.ru/documentation/article/336
-*/
-$url = 'https://core.brainysoft.ru:9025/bs-core/main/leads/';//Запрос на создание лида
-$bodyFields = [
-    "firstName" => '12',
-    "mobilePhone" => '312'
-];
-
-$url = 'https://core.brainysoft.ru:9025/bs-core/main/leads/partial-load';//Поиск по лидам https://connect.brainysoft.ru/documentation/page/735
-$bodyFields = [
-    "fields" => [
-        "id",
-        "channel",
-        "firstName",
-    ],
-    "countTo" => 10
-];
-$url = 'https://core.brainysoft.ru:9025/bs-core/main/leads/450';//Получение лида по ID https://connect.brainysoft.ru/documentation/page/451
-
-$bsauth = '=='; //fastmoney
-$headers = [
-    "Content-Type" => "application/json",
-    "bsauth" => "$bsauth",
-    "cache-control" => "no-cache"
-];
-$request = new Request('curl');
-$response = $request->run('GET', $url, $bodyFields, $headers);
-dump($response);
-
-//dump($repl->getExecutionTime());
-

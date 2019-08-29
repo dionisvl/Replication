@@ -36,11 +36,12 @@ class CreateDestinationTable extends CreateCommonClass
             echo "Table  '$this->dest_table_name'  does not exists.<br>" . PHP_EOL;
             echo "Start creating $this->dest_table_name... <br>".PHP_EOL;
             $this->createTable($this->dest_table_name, $this->dest_db);
+            $this->checkAndCreateColumnsInChildTable($this->getParentColumnsInfo());
         }
 
 
 
-        $this->checkAndCreateColumnsInChildTable($this->getParentColumnsInfo());
+
         $this->end_time = microtime(true);
     }
 
