@@ -3,7 +3,7 @@
  * example creating table for replicate in destination database
  * Создания таблицы репликанта и таблицы истории репликации
  */
-require 'vendor/autoload.php';
+require $_SERVER['DOCUMENT_ROOT'].'/vendor/autoload.php';
 
 use Replication\CreateDestinationTable\Config;
 use Replication\CreateDestinationTable\CreateDestinationTable;

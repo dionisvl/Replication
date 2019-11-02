@@ -3,7 +3,7 @@
  * test replicate rows from one table to any API
  * Реплицирования определенных строк таблицы из оригинала в API
  */
-require 'vendor/autoload.php';
+require $_SERVER['DOCUMENT_ROOT'].'/vendor/autoload.php';
 
 use Replication\ReplicateTableToApi\ReplicateTableToApi;
 use Replication\ReplicateTableToApi\ReplicateTableToApiConfig;
