@@ -8,3 +8,10 @@
    
    
    Примеры находятся в папке examples_tests
+   
+## instalation
+
+- git clone git@github.com:dionisvl/Replication.git
+- composer update
+- create DB "repl" in your DBMS 
+- open your_domain/examples_tests
