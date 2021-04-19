@@ -26,7 +26,9 @@ class ReplicateTableToApi
         if ($this->config->getReplicateToApiProcessStatus() == 'FREE') {
             $this->config->setReplicateToApiProcessStatus('IN_PROCESS');
         } else {
-            print_r('Процесс репликации в API уже запущен. Поэтому ваш запрос отклонен и программа завершает работу.' . PHP_EOL);
+            print_r(
+                'Процесс репликации в API уже запущен. Поэтому ваш запрос отклонен и программа завершает работу.' . PHP_EOL
+            );
             die();
         }
 
@@ -77,34 +79,35 @@ class ReplicateTableToApi
                     }
                 }
             }
-
         }
 //        dump($outputRow);
         return $outputRow;
     }
 
     /**
+     * @param $url
      * @param $items
+     * @param $token
      * @return string
      */
-    public function sendItemsToApiTable($url,$items,$token)
+    public function sendItemsToApiTable($url, $items, $token)
     {
         $table = $this->config->getSourceSqlTableName();
         $db = $this->config->getSourceSqlTableConnect();
         foreach ($items as $item) {
-            $result = $this->sendItemToApi($url, $item,$token);//Запрос на создание лида
+            $result = $this->sendItemToApi($url, $item, $token);//Запрос на создание лида
             switch ($result) {
-                case ($result['status'] == 'ok'):
+                case ($result['status'] === 'ok'):
                     /**
                      * NOT_READY - не готов к копированию.
                      * READY_TO_REPLICATE - готов к репликации.
                      * ALREADY_REPLICATED - реплицирован больше не трогать.
                      **/
                     $this->setStatusToItem($db, $table, 'user_status', $item['id'], 'ALREADY_REPLICATED');
-                    continue;
+                    continue 2;
                 case (empty($result)):
                     return 'ERROR - empty response of item id = ' . $item['id'];
-                case ($result['status'] == 'error'):
+                case ($result['status'] === 'error'):
                     return $result;
                 default:
                     return 'UNKNOWN ERROR of item id = ' . $item['id'];
@@ -113,27 +116,28 @@ class ReplicateTableToApi
         return 'ok';
     }
 
-    private function sendItemToApi($fullUrl, $itemValues,$bsauth)
+    private function sendItemToApi($fullUrl, $itemValues, string $token = '')
     {
         $bodyFields = $itemValues;
 
-        //$bsauth = $token; //fastmoney
         $headers = [
             "Content-Type" => "application/json",
-            "bsauth" => "$bsauth",
+            "token" => $token,
             "cache-control" => "no-cache"
         ];
         $request = new Request('curl');
         $response = $request->run('POST', $fullUrl, $bodyFields, $headers);
-        $response = json_decode($response, true);
-        return $response;
+        return json_decode($response, true);
     }
 
     /**
      * Установить статус элементу в исходной таблице
      * В частности для того чтобы в следующий раз не трогать этот элемент и лишний раз не копировать
-     * @param int $status
-     * @param int $leadId
+     * @param $db
+     * @param $table
+     * @param string $column
+     * @param int $itemId
+     * @param string $status
      * @return bool
      */
     public function setStatusToItem($db, $table, $column = 'user_status', int $itemId, string $status)
@@ -155,7 +159,7 @@ class ReplicateTableToApi
 
         } catch (PDOException $e) {
             print "Error!:" . $e->getMessage() . "<br/>";
-            $config->setReplicateToApiProcessStatus('FREE');
+            $this->config->setReplicateToApiProcessStatus('FREE');
             die();
         }
     }
@@ -164,8 +168,8 @@ class ReplicateTableToApi
     {
         $db = $this->config->getSourceSqlTableConnect();
         $sourceTable = $this->config->getSourceSqlTableName();
-        $keysForSql = $this->implodeKeys(', ', $leadValues);
-        $valuesKeysForPDO_Sql = ':' . $this->implodeKeys(', :', $leadValues);
+        $keysForSql = $this->implodeKeys(', ', $itemValues);
+        $valuesKeysForPDO_Sql = ':' . $this->implodeKeys(', :', $itemValues);
         try {
             $sql = "INSERT INTO core_customer_table ($keysForSql) VALUES ($valuesKeysForPDO_Sql)";
             $stmt = $db->prepare($sql);
@@ -181,12 +185,12 @@ class ReplicateTableToApi
                  **/
                 $this->setStatusToItem($db, $sourceTable, 'user_status', $value['id'], 'ALREADY_REPLICATED');
                 return true;
-            } else {
-                return false;
             }
+
+            return false;
         } catch (PDOException $e) {
             print "Error!:" . $e->getMessage() . "<br/>";
-            $config->setReplicateToApiProcessStatus('FREE');
+            $this->config->setReplicateToApiProcessStatus('FREE');
             die();
         }
     }
@@ -197,26 +201,26 @@ class ReplicateTableToApi
      * @param $array
      * @return string
      */
-    private function implodeKeys($separator, $array)
+    private function implodeKeys($separator, $array): string
     {
         $out = '';
         $lastKey = array_key_last($array);
         foreach ($array as $key => $value) {
             $out .= $key;
-            $out .= ($key != $lastKey) ? $separator : '';
+            $out .= ($key !== $lastKey) ? $separator : '';
         }
         return $out;
     }
 
-    public function getExecutionTime()
+    public function getExecutionTime(): string
     {
         return number_format(microtime(true) - $this->start_time, 3, '.', ',');
     }
 
-    private function check_pdo($sth)
+    private function check_pdo($sth): void
     {
         if (!empty($sth->errorInfo()[2])) {
-            dump('[' . __LINE__ . ']Произошла ошибка репликации:');
+            dump('[' . __LINE__ . '] Произошла ошибка репликации:');
             dump($sth->errorInfo()[2]);
             dump('Полная структура запроса:');
             dump($sth);

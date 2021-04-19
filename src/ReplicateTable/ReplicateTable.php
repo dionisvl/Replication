@@ -37,7 +37,9 @@ class ReplicateTable
         if ($this->config->getReplicateProcessStatus() == 'FREE') {
             $this->config->setReplicateProcessStatus('IN_PROCESS');
         } else {
-            print_r('Процесс репликации уже запущен. Поэтому ваш запрос отклонен и программа завершает работу.' . PHP_EOL);
+            print_r(
+                'Процесс репликации уже запущен. Поэтому ваш запрос отклонен и программа завершает работу.' . PHP_EOL
+            );
             die();
         }
 //        $this->repl_history = $this->config->getReplHistoryTableName();
@@ -63,9 +65,16 @@ class ReplicateTable
          * - по завершении репликации заполняем поле repl_create_ts в табл  repl_history
          */
 
-        print_r('Ограничительный размер пачки репликации - $batch_size: ' . $this->config->getBatchSize() . PHP_EOL . '<br>');
-        print_r('Последний обработанный timestamp: $last_processed_ts: ' . $this->config->getLastProcessedTs() . PHP_EOL . '<br>');
-        print_r('Последний обработанный id, $last_processed_id: ' . $this->config->getLastProcessedId() . PHP_EOL . '<br>');
+        print_r(
+            'Ограничительный размер пачки репликации - $batch_size: ' . $this->config->getBatchSize() . PHP_EOL . '<br>'
+        );
+        print_r(
+            'Последний обработанный timestamp: $last_processed_ts: ' . $this->config->getLastProcessedTs(
+            ) . PHP_EOL . '<br>'
+        );
+        print_r(
+            'Последний обработанный id, $last_processed_id: ' . $this->config->getLastProcessedId() . PHP_EOL . '<br>'
+        );
 
 
         $this->get_batch(
@@ -84,8 +93,15 @@ class ReplicateTable
      * Если $id не передан, тогда создадим новую запись в истории о том что репликация началась иначе
      * изменим запись в таблице о том что репликация пачки завершилась
      */
-    private function setReplicateHistoryRecord($db, $batch_size, $update_ts_first, $update_ts_last, $status, $info, $id = null)
-    {
+    private function setReplicateHistoryRecord(
+        $db,
+        $batch_size,
+        $update_ts_first,
+        $update_ts_last,
+        $status,
+        $info,
+        $id = null
+    ) {
         $repl_history = $this->config->getReplHistoryTableName();
         try {
             if ($id) {
@@ -119,8 +135,9 @@ class ReplicateTable
             $this->check_pdo($sth);
             if ($id) {
                 return $id;
-            } else
+            } else {
                 return $db->lastInsertId();
+            }
         } catch (PDOException $e) {
             print "Error!:" . $e->getMessage() . "<br/>";
             $this->config->setReplicateProcessStatus('FREE');//Установим флаг о том что процесс завершился
@@ -232,11 +249,11 @@ class ReplicateTable
             print_r("<h3>Началась репликация пачки № $iteration_number.</h3>");
             $sql = "
 SELECT * from $source_table
-where TRUE
-    and update_ts >= :last_processed_ts
-    and id > IF(update_ts = :last_processed_ts, :last_processed_id, 0)
-order by update_ts, id
-limit :batch_size;
+WHERE TRUE
+    AND update_ts >= :last_processed_ts
+    AND id > IF(update_ts = :last_processed_ts, :last_processed_id, 0)
+ORDER BY update_ts, id
+LIMIT :batch_size;
 ";
             //получим пакет записей из родительской таблицы
             $sth = $db->prepare($sql);
@@ -301,7 +318,15 @@ ON DUPLICATE KEY UPDATE
             }
             $update_ts_last = $max_ts;
             $update_ts_first = $data[array_key_first($data)]['update_ts'];
-            $repl_status = $this->setReplicateHistoryRecord($dest_db, $this_batch_size, $update_ts_first, $update_ts_last, 1, 'Репликация завершена', $repl_proc_id);
+            $repl_status = $this->setReplicateHistoryRecord(
+                $dest_db,
+                $this_batch_size,
+                $update_ts_first,
+                $update_ts_last,
+                1,
+                'Репликация завершена',
+                $repl_proc_id
+            );
 
             dump(PHP_EOL . "<h4>Репликация пачки завершена. ID Записи в истории репликации: $repl_status. </h4>");
             dump("<p>Размер этой обновленной пачки: $this_batch_size. </p>");
@@ -316,7 +341,7 @@ ON DUPLICATE KEY UPDATE
              * Тогда запустим обработку следующей пачки
              */
             if ($this_batch_size == $batch_size) {
-                if (($max_ts >= $last_processed_ts) AND ($max_id > $last_processed_id)) {
+                if (($max_ts >= $last_processed_ts) && ($max_id > $last_processed_id)) {
                     $last_processed_ts = $max_ts;
                     $last_processed_id = $max_id;
 
@@ -335,10 +360,10 @@ ON DUPLICATE KEY UPDATE
         return number_format($this->end_time - $this->start_time, 3, '.', ',');
     }
 
-    private function check_pdo($sth)
+    private function check_pdo($sth): void
     {
         if (!empty($sth->errorInfo()[2])) {
-            dump('['.__LINE__.']Произошла ошибка репликации:');
+            dump('[' . __LINE__ . ']Произошла ошибка репликации:');
             dump($sth->errorInfo()[2]);
             dump('Полная структура запроса:');
             dump($sth);

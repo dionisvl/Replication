@@ -9,11 +9,14 @@
    
    Примеры находятся в папке examples_tests
    
-## instalation
+## Installation
 
 - git clone git@github.com:dionisvl/Replication.git
 - composer update
-- create DB "repl" in your DBMS 
+- create DB "repl" in your DBMS
+- Создать таблицу "source_table" со своими любыми колонками
+- после этого скрипт может автоматически создать таблицу репликации "dest_table".  
+  И для этого проще воспользоваться скриптом replication/examples_tests/index.php п. 1
 - open your_domain/examples_tests
 
 ## Пример кейса зачем это нужно

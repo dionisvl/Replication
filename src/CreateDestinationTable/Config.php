@@ -26,7 +26,11 @@ class Config
         $this->repl_history_table_name = $this->config['MAIN']['repl_history'];
         $this->dest_table_name = $this->config['MAIN']['dest_table'];
 
-        $this->sourceTableConnect = $this->createSourceTableConnect('mysql:host=localhost;dbname=repl;','root', '');
+        $source_db_name = $this->config['MAIN']['source_db_name'] ?? 'repl';
+        $source_db_user = $this->config['MAIN']['source_db_user'] ?? 'root';
+        $source_db_pass = $this->config['MAIN']['source_db_pass'] ?? 'root';
+
+        $this->sourceTableConnect = $this->createSourceTableConnect("mysql:host=localhost;dbname=$source_db_name;",$source_db_user, $source_db_pass);
         $this->destTableConnect = $this->createDestTableConnect();
     }
 
@@ -96,7 +100,7 @@ class Config
     /**
      * @return string
      */
-    public function getSourceTableName()
+    public function getSourceTableName(): string
     {
         return $this->source_table_name;
     }
@@ -104,7 +108,7 @@ class Config
     /**
      * @return string
      */
-    public function getReplHistoryTableName()
+    public function getReplHistoryTableName(): string
     {
         return $this->repl_history_table_name;
     }
@@ -112,7 +116,7 @@ class Config
     /**
      * @return string
      */
-    public function getDestTableName()
+    public function getDestTableName(): string
     {
         return $this->dest_table_name;
     }

@@ -1,9 +1,10 @@
 <?php
+
 /**
  * test replicate rows from one table to any API
  * Реплицирования определенных строк таблицы из оригинала в API
  */
-require $_SERVER['DOCUMENT_ROOT'].'/vendor/autoload.php';
+require __DIR__ . '/../vendor/autoload.php';
 
 use Replication\ReplicateTableToApi\ReplicateTableToApi;
 use Replication\ReplicateTableToApi\ReplicateTableToApiConfig;
@@ -39,13 +40,13 @@ if (empty($newItems)) {
     dump('Новых элементов для репликации не найдено');
     $config->setReplicateToApiProcessStatus('FREE');//Установим флаг о том что процесс завершился
     die();
-} else {
-    dump('Получены и подготовлены к передаче по API следующие элементы:');
-    dump($newItems);
-
-    $result = $repl->sendItemsToApiTable($fullUrl, $newItems, $token);
-    dump($result);
-    $config->setReplicateToApiProcessStatus('FREE');
-    dump(' Время исполнения: ' . $repl->getExecutionTime() . ' сек.');
-    die();
 }
+
+dump('Получены и подготовлены к передаче по API следующие элементы:');
+dump($newItems);
+
+$result = $repl->sendItemsToApiTable($fullUrl, $newItems, $token);
+dump($result);
+$config->setReplicateToApiProcessStatus('FREE');
+dump(' Время исполнения: ' . $repl->getExecutionTime() . ' сек.');
+die();
